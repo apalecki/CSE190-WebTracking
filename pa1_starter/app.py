@@ -84,7 +84,7 @@ def jsontest():
 
 @app.get('/search')
 def search():
-    query = request.args.get("q", "").strip()
+    query = request.args.get("q", "")
     client_id = get_client_id()
     is_new = client_id is None
     if is_new:
@@ -92,7 +92,7 @@ def search():
 
     with db() as conn:
         request_id = track(conn, client_id)
-        if query:
+        if query.strip():
             conn.execute(
                 "INSERT INTO searches (client_id, request_id, query) VALUES (%s, %s, %s)",
                 (client_id, request_id, query),
