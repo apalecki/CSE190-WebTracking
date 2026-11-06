@@ -1,5 +1,7 @@
+import sys
 from pathlib import Path
 
+import joblib
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -12,6 +14,7 @@ ATTRIBUTES = [
 ]
 
 DATA = Path(__file__).resolve().parent / "data"
+MODEL_PATH = Path(__file__).resolve().parent / "models.joblib"
 
 
 def load_users(split):
@@ -22,14 +25,53 @@ def load_labels(split):
     return pd.read_csv(DATA / f"{split}_labels.csv", dtype=str, keep_default_na=False)
 
 
-def extract_text(users):
-    def user_text(row):
-        searches = row.get("searches") or []
-        queries = " ".join(s["query"] for s in searches if "query" in s)
-        ua = row.get("latest_user_agent") or ""
-        return queries + " " + ua
+def user_text(searches, ua):
+    queries = " ".join(s["query"] for s in searches or [] if "query" in s)
+    return queries + " " + (ua or "")
 
-    return users.apply(user_text, axis=1)
+
+def extract_text(users):
+    return users.apply(
+        lambda row: user_text(row.get("searches"), row.get("latest_user_agent")), axis=1
+    )
+
+
+def make_pipeline():
+    return Pipeline([
+        ("tfidf", TfidfVectorizer(
+            ngram_range=(1, 2),
+            min_df=2,
+            sublinear_tf=True,
+            max_features=100000,
+        )),
+        ("clf", LogisticRegression(
+            max_iter=1000,
+            C=5.0,
+            solver="lbfgs",
+            class_weight="balanced",
+        )),
+    ])
+
+
+def train_serving_models():
+    """Fit one pipeline per attribute on train + dev and save them for the SSP."""
+    users = pd.concat([load_users("train"), load_users("dev")], ignore_index=True)
+    labels = pd.concat([load_labels("train"), load_labels("dev")]).set_index("client_id")
+    text = extract_text(users)
+
+    models = {}
+    for attr in ATTRIBUTES:
+        pipe = make_pipeline()
+        pipe.fit(text, labels.loc[users["client_id"], attr].values)
+        models[attr] = pipe
+    joblib.dump(models, MODEL_PATH)
+    return models
+
+
+def load_serving_models():
+    if MODEL_PATH.exists():
+        return joblib.load(MODEL_PATH)
+    return train_serving_models()
 
 
 def main():
@@ -52,21 +94,7 @@ def main():
         y_train = train_labels.loc[train_users["client_id"], attr].values
         y_dev = dev_labels.loc[dev_users["client_id"], attr].values
 
-        pipe = Pipeline([
-            ("tfidf", TfidfVectorizer(
-                ngram_range=(1, 2),
-                min_df=2,
-                sublinear_tf=True,
-                max_features=100000,
-            )),
-            ("clf", LogisticRegression(
-                max_iter=1000,
-                C=5.0,
-                solver="lbfgs",
-                class_weight="balanced",
-            )),
-        ])
-
+        pipe = make_pipeline()
         pipe.fit(train_text, y_train)
         dev_pred = pipe.predict(dev_text)
         score = f1_score(y_dev, dev_pred, average="macro", zero_division=0)
@@ -80,4 +108,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv:
+        train_serving_models()
+        print(f"Wrote {MODEL_PATH}")
+    else:
+        main()

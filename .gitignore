@@ -19,3 +19,4 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+models.joblib

@@ -1,2 +1,6 @@
 flask
 psycopg[binary]
+pandas
+scikit-learn
+joblib
+requests
