@@ -59,11 +59,16 @@ def train_serving_models():
     labels = pd.concat([load_labels("train"), load_labels("dev")]).set_index("client_id")
     text = extract_text(users)
 
+    # Every attribute sees the same text, so fit TF-IDF once and share it:
+    # the saved file and the server's memory hold a single vocabulary.
+    tfidf = make_pipeline().named_steps["tfidf"]
+    X = tfidf.fit_transform(text)
+
     models = {}
     for attr in ATTRIBUTES:
-        pipe = make_pipeline()
-        pipe.fit(text, labels.loc[users["client_id"], attr].values)
-        models[attr] = pipe
+        clf = make_pipeline().named_steps["clf"]
+        clf.fit(X, labels.loc[users["client_id"], attr].values)
+        models[attr] = Pipeline([("tfidf", tfidf), ("clf", clf)])
     joblib.dump(models, MODEL_PATH)
     return models
 
