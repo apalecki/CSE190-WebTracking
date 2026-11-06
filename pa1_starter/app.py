@@ -2,7 +2,6 @@ import json
 import math
 import os
 import random
-import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -11,6 +10,7 @@ from pathlib import Path
 
 import psycopg
 import requests
+import requests.adapters
 from flask import Flask, render_template, request, redirect, make_response
 
 from classify import ATTRIBUTES, load_serving_models, user_text
@@ -185,14 +185,12 @@ SEGMENTS = {
 }
 MODELS = load_serving_models()
 POOL = ThreadPoolExecutor(max_workers=32)
-_local = threading.local()
 
-
-def session():
-    """One keep-alive session per worker thread, so DSP calls skip the TLS handshake."""
-    if not hasattr(_local, "session"):
-        _local.session = requests.Session()
-    return _local.session
+# One keep-alive session shared by all threads (urllib3's pool is thread-safe),
+# so DSP calls reuse warm connections instead of paying a TLS handshake each.
+SESSION = requests.Session()
+SESSION.mount("https://", requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=32))
+SESSION.mount("http://", requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=32))
 
 
 def infer_segments(searches, ua):
@@ -229,7 +227,7 @@ def blocklist(conn):
 def ask_dsp(dsp, payload, deadline):
     """POST one bid request; returns the parsed body, or None for no/late/bad bids."""
     try:
-        resp = session().post(
+        resp = SESSION.post(
             f"{RTB_URL}/{dsp}/bid", data=payload, timeout=TMAX_MS / 1000,
             headers={"Content-Type": "application/json"},
         )
@@ -277,7 +275,7 @@ def valid_bids(response, blocked_domains, blocked_crids):
 
 def bill(burl, price):
     try:
-        session().get(burl.replace("${AUCTION_PRICE}", f"{price:.2f}"), timeout=2)
+        SESSION.get(burl.replace("${AUCTION_PRICE}", f"{price:.2f}"), timeout=2)
     except requests.RequestException:
         pass
 
